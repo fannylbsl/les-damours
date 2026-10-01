@@ -1,1 +1,1 @@
-window.SUPABASE_CONFIG = { url:'', publishableKey:'' };
+window.SUPABASE_CONFIG = { url:'https://oyskqoouigqlaxhqyzdg.supabase.co', publishableKey:'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im95c2txb291aWdxbGF4aHF5emRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA4ODEyNzEsImV4cCI6MjEwNjQ1NzI3MX0.-hLZNNEHILE-IlwN7VaLpag6L0tFquU4SMjrtsBfnwM' };
