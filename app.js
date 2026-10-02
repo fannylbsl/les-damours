@@ -15,7 +15,7 @@ const esc=s=>String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const safeUrl=s=>{try{const u=new URL(s);return ['http:','https:'].includes(u.protocol)?u.href:null}catch{return null}};
 const defaultState=()=>({
   version:1, profile:{me:'Fanny',him:'Thomas'}, weekStart:startWeek(todayISO()),
-  events:[], menus:[], tasks:[], shopping:{items:[],staples:[]}, expenses:[], reimbursements:[],
+  events:[], birthdays:[], menus:[], tasks:[], shopping:{items:[],staples:[]}, expenses:[], reimbursements:[],
   settings:{icons:[['🩺','Médecin'],['🦷','Dentiste'],['🚗','Garage'],['💼','Travail'],['🏠','Maison'],['💇','Coiffeur'],['🐾','Vétérinaire'],['🛒','Courses'],['🍿','Sortie'],['✈️','Voyage'],['🍽️','Restaurant'],['💪','Sport'],['📌','Autre']],
   taskMoods:{me:{name:'Doux',enabled:true,messages:['Et une chose de moins à gérer ❤️','Petit pas, grande victoire 🌸','Bravo, tu avances ! ✨']},him:{name:'Helldivers',enabled:true,messages:['MISSION ACCOMPLIE. SUPER-TERRE VOUS REMERCIE. 🫡','DÉMOCRATIE DISTRIBUÉE. 🪖','OBJECTIF ÉLIMINÉ. RETOUR AU FRONT. 💥','+1 contribution à la démocratie. ⭐']}}}
 });
