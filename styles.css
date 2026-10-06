@@ -15,3 +15,11 @@
 .ios-switch span:before{content:'';position:absolute;width:28px;height:28px;left:2px;top:2px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.18);transition:.2s}
 .ios-switch input:checked+span{background:#69b86b}.ios-switch input:checked+span:before{transform:translateX(20px)}
 @media(max-width:520px){.ios-date-time{grid-template-columns:minmax(0,1fr) 82px}.event-form .form-grid{grid-template-columns:1fr}.event-form .field.full{grid-column:auto}}
+
+/* Ajustement des champs date/heure iOS */
+.ios-date-time{grid-template-columns:minmax(0,145px) 82px;justify-content:end}
+.ios-date-time .ios-control[type="date"]{width:145px;min-width:0}
+.ios-date-time .time-control{width:82px;min-width:0}
+@media(max-width:520px){
+  .ios-date-time{grid-template-columns:minmax(0,145px) 82px;justify-content:end}
+}
