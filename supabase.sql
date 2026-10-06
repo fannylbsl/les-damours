@@ -84,3 +84,18 @@ grant execute on function public.join_household(text) to authenticated;
 
 -- Realtime can listen to this table. If your project requires it, run:
 -- alter publication supabase_realtime add table public.household_state;
+
+
+-- Active la diffusion Realtime des modifications pour les deux téléphones.
+do $$ begin
+  if not exists (
+    select 1
+    from pg_publication_rel pr
+    join pg_class c on c.oid=pr.prrelid
+    join pg_namespace n on n.oid=c.relnamespace
+    where pr.prpubid=(select oid from pg_publication where pubname='supabase_realtime')
+      and n.nspname='public' and c.relname='household_state'
+  ) then
+    execute 'alter publication supabase_realtime add table public.household_state';
+  end if;
+end $$;
