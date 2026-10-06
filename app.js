@@ -91,7 +91,7 @@ function eventForm(e={},date=todayISO()){
         <div class="ios-row-label"><strong>Début</strong></div>
         <div class="ios-date-time">
           <input class="input ios-control" name="date" type="date" required value="${e.date||date}">
-          <input class="input ios-control time-control" name="time" type="time" step="300" ${allDay?'disabled':''} value="${e.time||'10:00'}">
+          <input class="input ios-control time-control" name="time" type="time" step="60" ${allDay?'disabled':''} value="${e.time||'10:00'}">
         </div>
       </div>
       <div class="ios-row ios-date-row">
@@ -154,21 +154,53 @@ function bind(){document.addEventListener('click',e=>{const t=e.target.closest('
 async function householdModal(){if(!sb||!sync.authUser)return toast('Connecte-toi d’abord.');showModal('Foyer partagé',`<div class="notice">Un seul foyer pour vous deux. Le code ne sert qu’à relier le deuxième compte au même planning.</div><div class="summary-grid" style="margin-top:12px"><button class="card" id="create-household"><strong>❤️ Créer notre foyer</strong><small class="muted">À faire sur le premier téléphone</small></button><button class="card" id="join-household"><strong>🔗 Rejoindre</strong><small class="muted">Avec le code donné par l’autre téléphone</small></button></div>`);document.getElementById('create-household').onclick=async()=>{const {data,error}=await sb.rpc('create_household');if(error)return toast(error.message);sync.household={id:data[0].id,code:data[0].code};await pushState();sync.connected=true;await syncInit();closeModal();renderAll();toast(`Foyer créé · code ${data[0].code}`)};document.getElementById('join-household').onclick=()=>{showModal('Rejoindre votre foyer',`<form id="join-form"><div class="field"><label>Code du foyer</label><input class="input" name="code" required maxlength=8 placeholder="AB12CD34" style="text-transform:uppercase"></div><div class="modal-actions"><button class="btn primary">Rejoindre</button></div></form>`);document.getElementById('join-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {data,error}=await sb.rpc('join_household',{join_code:f.get('code').trim().toUpperCase()});if(error)return toast(error.message);sync.household={id:data[0].id,code:data[0].code};const {data:r}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();if(r?.state)state={...defaultState(),...r.state};saveLocal();sync.connected=true;await syncInit();closeModal();renderAll();toast('Vous êtes dans le même foyer ❤️')}}}async function authModal(){if(!sb)return toast('Supabase n’est pas configuré.');showModal(sync.authUser?'Compte connecté':'Connexion',sync.authUser?`<div class="notice">Connecté avec <strong>${esc(sync.authUser.email||'compte')}</strong>.</div><div class="modal-actions"><button class="btn danger" id="signout">Se déconnecter</button></div>`:`<form id="auth-form"><div class="field"><label>Email</label><input class="input" name="email" type="email" required></div><div class="field" style="margin-top:10px"><label>Mot de passe</label><input class="input" name="password" type="password" minlength="6" required></div><div class="modal-actions"><button class="btn" name="mode" value="signin">Se connecter</button><button class="btn primary" name="mode" value="signup">Créer mon compte</button></div></form>`);if(sync.authUser){document.getElementById('signout').onclick=async()=>{await sb.auth.signOut();sync.authUser=null;sync.connected=false;closeModal();renderAll()}}else document.getElementById('auth-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {data,error}=await (e.submitter.value==='signup'?sb.auth.signUp({email:f.get('email'),password:f.get('password')}):sb.auth.signInWithPassword({email:f.get('email'),password:f.get('password')}));if(error)return toast(error.message);sync.authUser=data.user;toast('Connexion réussie');closeModal();await syncInit()}}
 let syncTimer=null,pullTimer=null;
 function queueSync(){if(!sb||!sync.authUser||!sync.household)return;clearTimeout(syncTimer);syncTimer=setTimeout(pushState,500)}
-async function pushState(){if(!sb||!sync.authUser||!sync.household)return;const payload={household_id:sync.household.id,state};const {error}=await sb.from('household_state').upsert(payload,{onConflict:'household_id'});if(error)console.warn('Sync écriture:',error)}
+async function pushState(fromMerge=false){
+  if(!sb||!sync.authUser||!sync.household)return;
+  if(!fromMerge){
+    const {data:r}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();
+    if(r?.state){
+      const merged=mergeSharedState(r.state);
+      state=merged;saveLocal();
+    }
+  }
+  const payload={household_id:sync.household.id,state};
+  const {error}=await sb.from('household_state').upsert(payload,{onConflict:'household_id'});
+  if(error)console.warn('Sync écriture:',error);
+}
+function mergeSharedState(remoteState){
+  const d=defaultState();
+  const r={...d,...(remoteState||{})};
+  const byId=(local=[],remote=[])=>{
+    const map=new Map();
+    [...remote,...local].forEach(x=>{if(x?.id)map.set(x.id,x)});
+    return [...map.values()];
+  };
+  return {
+    ...d,...r,
+    events:byId(state.events,r.events),
+    birthdays:byId(state.birthdays,r.birthdays),
+    menus:byId(state.menus,r.menus),
+    tasks:byId(state.tasks,r.tasks),
+    expenses:byId(state.expenses,r.expenses),
+    reimbursements:byId(state.reimbursements,r.reimbursements),
+    shopping:{...(r.shopping||{}),items:byId(state.shopping?.items,r.shopping?.items),staples:byId(state.shopping?.staples,r.shopping?.staples)},
+    settings:{...d.settings,...r.settings,taskMoods:{...d.settings.taskMoods,...r.settings?.taskMoods}}
+  };
+}
 async function pullState(){
   if(!sb||!sync.authUser||!sync.household)return;
   const {data:r,error}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();
   if(error||!r?.state)return;
-  const remote=JSON.stringify(r.state),local=JSON.stringify(state);
-  if(remote!==local){
-    const d=defaultState();
-    state={...d,...r.state,birthdays:r.state.birthdays||[],settings:{...d.settings,...r.state.settings,taskMoods:{...d.settings.taskMoods,...r.state.settings?.taskMoods}}};
+  const merged=mergeSharedState(r.state);
+  if(JSON.stringify(merged)!==JSON.stringify(state)){
+    state=merged;
     weekStart=state.weekStart||startWeek(todayISO());saveLocal();renderAll();
   }
+  await pushState(true);
 }
 function startSyncLoop(){clearInterval(pullTimer);pullTimer=setInterval(pullState,4000);pullState()}
 function stopSyncLoop(){clearInterval(pullTimer);pullTimer=null}
-async function syncInit(){if(!sb)return;const {data:{user}}=await sb.auth.getUser();sync.authUser=user;if(!user)return;const {data:m}=await sb.from('household_members').select('household_id,households(id,code)').eq('user_id',user.id).maybeSingle();if(m?.households){sync.household=m.households;const {data:r}=await sb.from('household_state').select('state').eq('household_id',m.household_id).maybeSingle();if(r?.state){state={...defaultState(),...r.state};weekStart=state.weekStart||startWeek(todayISO());saveLocal()}else await pushState();sync.connected=true;renderAll();if(sync.channel)sb.removeChannel(sync.channel);sync.channel=sb.channel(`household-${m.household_id}`).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:`household_id=eq.${m.household_id}`},p=>{if(p.new?.state){state={...defaultState(),...p.new.state};weekStart=state.weekStart||startWeek(todayISO());saveLocal();renderAll()}}).subscribe();startSyncLoop()}}
+async function syncInit(){if(!sb)return;const {data:{user}}=await sb.auth.getUser();sync.authUser=user;if(!user)return;const {data:m}=await sb.from('household_members').select('household_id,households(id,code)').eq('user_id',user.id).maybeSingle();if(m?.households){sync.household=m.households;const {data:r}=await sb.from('household_state').select('state').eq('household_id',m.household_id).maybeSingle();if(r?.state){state=mergeSharedState(r.state);weekStart=state.weekStart||startWeek(todayISO());saveLocal();await pushState(true)}else await pushState();sync.connected=true;renderAll();if(sync.channel)sb.removeChannel(sync.channel);sync.channel=sb.channel(`household-${m.household_id}`).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:`household_id=eq.${m.household_id}`},p=>{if(p.new?.state){state={...defaultState(),...p.new.state};weekStart=state.weekStart||startWeek(todayISO());saveLocal();renderAll()}}).subscribe();startSyncLoop()}}
 if(sb){sb.auth.onAuthStateChange((_e,s)=>{sync.authUser=s?.user||null;if(s?.user)setTimeout(syncInit,0);else{sync.connected=false;stopSyncLoop();renderAll()}});setTimeout(syncInit,200)}
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 bind();renderAll();
