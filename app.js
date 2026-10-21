@@ -154,18 +154,33 @@ function bind(){document.addEventListener('click',e=>{const t=e.target.closest('
 async function householdModal(){if(!sb||!sync.authUser)return toast('Connecte-toi d’abord.');showModal('Foyer partagé',`<div class="notice">Un seul foyer pour vous deux. Le code ne sert qu’à relier le deuxième compte au même planning.</div><div class="summary-grid" style="margin-top:12px"><button class="card" id="create-household"><strong>❤️ Créer notre foyer</strong><small class="muted">À faire sur le premier téléphone</small></button><button class="card" id="join-household"><strong>🔗 Rejoindre</strong><small class="muted">Avec le code donné par l’autre téléphone</small></button></div>`);document.getElementById('create-household').onclick=async()=>{const {data,error}=await sb.rpc('create_household');if(error)return toast(error.message);sync.household={id:data[0].id,code:data[0].code};await pushState();sync.connected=true;await syncInit();closeModal();renderAll();toast(`Foyer créé · code ${data[0].code}`)};document.getElementById('join-household').onclick=()=>{showModal('Rejoindre votre foyer',`<form id="join-form"><div class="field"><label>Code du foyer</label><input class="input" name="code" required maxlength=8 placeholder="AB12CD34" style="text-transform:uppercase"></div><div class="modal-actions"><button class="btn primary">Rejoindre</button></div></form>`);document.getElementById('join-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {data,error}=await sb.rpc('join_household',{join_code:f.get('code').trim().toUpperCase()});if(error)return toast(error.message);sync.household={id:data[0].id,code:data[0].code};const {data:r}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();if(r?.state)state=mergeSharedState(r.state);saveLocal();sync.connected=true;await syncInit();closeModal();renderAll();toast('Vous êtes dans le même foyer ❤️')}}}async function authModal(){if(!sb)return toast('Supabase n’est pas configuré.');showModal(sync.authUser?'Compte connecté':'Connexion',sync.authUser?`<div class="notice">Connecté avec <strong>${esc(sync.authUser.email||'compte')}</strong>.</div><div class="modal-actions"><button class="btn danger" id="signout">Se déconnecter</button></div>`:`<form id="auth-form"><div class="field"><label>Email</label><input class="input" name="email" type="email" required></div><div class="field" style="margin-top:10px"><label>Mot de passe</label><input class="input" name="password" type="password" minlength="6" required></div><div class="modal-actions"><button class="btn" name="mode" value="signin">Se connecter</button><button class="btn primary" name="mode" value="signup">Créer mon compte</button></div></form>`);if(sync.authUser){document.getElementById('signout').onclick=async()=>{await sb.auth.signOut();sync.authUser=null;sync.connected=false;closeModal();renderAll()}}else document.getElementById('auth-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);const {data,error}=await (e.submitter.value==='signup'?sb.auth.signUp({email:f.get('email'),password:f.get('password')}):sb.auth.signInWithPassword({email:f.get('email'),password:f.get('password')}));if(error)return toast(error.message);sync.authUser=data.user;toast('Connexion réussie');closeModal();await syncInit()}}
 let syncTimer=null,pullTimer=null,syncWrite=Promise.resolve();
 function queueSync(){if(!sb||!sync.authUser||!sync.household)return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>{syncWrite=syncWrite.then(()=>pushState()).catch(err=>console.warn('File de synchronisation:',err))},500)}
+async function writeSharedState(householdId,nextState){
+  const {data:existing,error:readError}=await sb.from('household_state').select('household_id').eq('household_id',householdId).maybeSingle();
+  if(readError)throw readError;
+  if(existing){
+    const {data,error}=await sb.from('household_state').update({state:nextState}).eq('household_id',householdId).select('household_id').maybeSingle();
+    if(error)throw error;
+    if(!data)throw new Error('La ligne du foyer existe mais ne peut pas être modifiée.');
+  }else{
+    const {error}=await sb.from('household_state').insert({household_id:householdId,state:nextState});
+    if(error)throw error;
+  }
+}
 async function pushState(fromMerge=false){
   if(!sb||!sync.authUser||!sync.household)return;
-  if(!fromMerge){
-    const {data:r}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();
-    if(r?.state){
-      const merged=mergeSharedState(r.state);
-      state=merged;saveLocal();
+  try{
+    if(!fromMerge){
+      const {data:r,error}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();
+      if(error)throw error;
+      if(r?.state){
+        const merged=mergeSharedState(r.state);
+        state=merged;saveLocal();
+      }
     }
+    await writeSharedState(sync.household.id,state);
+  }catch(error){
+    console.warn('Sync écriture:',error);sync.connected=false;ensureGate();gateMessage('Écriture non synchronisée : '+String(error?.message||error)+' — accès bloqué. Vérifie la connexion puis réessaie.');
   }
-  const payload={household_id:sync.household.id,state};
-  const {error}=await sb.from('household_state').upsert(payload,{onConflict:'household_id'});
-  if(error){console.warn('Sync écriture:',error);sync.connected=false;ensureGate();gateMessage('Écriture non synchronisée : accès bloqué. Vérifie la connexion puis réessaie.');}
 }
 function mergeSharedState(remoteState){
   const d=defaultState();
@@ -232,9 +247,7 @@ async function verifySharedAccess(){
     const {data:r,error:re}=await sb.from('household_state').select('state').eq('household_id',m.household_id).maybeSingle();
     if(re) throw re;
     if(r?.state){state=mergeSharedState(r.state);weekStart=state.weekStart||startWeek(todayISO());saveLocal()}
-    else {const {error:wr}=await sb.from('household_state').upsert({household_id:m.household_id,state},{onConflict:'household_id'});if(wr)throw wr}
-    const {error:writeErr}=await sb.from('household_state').upsert({household_id:m.household_id,state},{onConflict:'household_id'});
-    if(writeErr)throw writeErr;
+    await writeSharedState(m.household_id,state);
     sync.connected=true;renderAll();
     if(sync.channel)sb.removeChannel(sync.channel);
     sync.channel=sb.channel('household-'+m.household_id).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:'household_id=eq.'+m.household_id},p=>{if(p.new?.state){state=mergeSharedState(p.new.state);weekStart=state.weekStart||startWeek(todayISO());saveLocal();renderAll()}}).subscribe();
