@@ -165,7 +165,7 @@ async function pushState(fromMerge=false){
   }
   const payload={household_id:sync.household.id,state};
   const {error}=await sb.from('household_state').upsert(payload,{onConflict:'household_id'});
-  if(error)console.warn('Sync écriture:',error);
+  if(error){console.warn('Sync écriture:',error);sync.connected=false;ensureGate();gateMessage('Écriture non synchronisée : accès bloqué. Vérifie la connexion puis réessaie.');}
 }
 function mergeSharedState(remoteState){
   const d=defaultState();
@@ -190,7 +190,7 @@ function mergeSharedState(remoteState){
 async function pullState(){
   if(!sb||!sync.authUser||!sync.household)return;
   const {data:r,error}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();
-  if(error||!r?.state)return;
+  if(error){sync.connected=false;ensureGate();gateMessage('Lecture de la synchronisation impossible : accès bloqué. Vérifie la connexion puis réessaie.');return}if(!r?.state)return;
   const merged=mergeSharedState(r.state);
   if(JSON.stringify(merged)!==JSON.stringify(state)){
     state=merged;
