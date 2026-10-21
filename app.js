@@ -221,7 +221,7 @@ function gateMarkup(){
   return '<div class="gate-card"><div class="gate-heart">❤️</div><div class="brand-script gate-brand">Les d’Amours</div><h1>'+title+'</h1>'+body+'<div id="gate-message" role="status" class="gate-message"></div></div>';
 }
 function gateMessage(msg){const el=document.getElementById('gate-message');if(el)el.textContent=msg}
-function ensureGate(){let g=document.getElementById('auth-gate');if(!g){g=document.createElement('div');g.id='auth-gate';g.innerHTML=gateMarkup();document.body.appendChild(g)}else g.innerHTML=gateMarkup();g.style.display=(sync.connected&&sync.authUser&&sync.household&&navigator.onLine)?'none':'flex';}
+function ensureGate(){let g=document.getElementById('auth-gate');const previous=g?.querySelector('#gate-message')?.textContent||'';if(!g){g=document.createElement('div');g.id='auth-gate';g.innerHTML=gateMarkup();document.body.appendChild(g)}else g.innerHTML=gateMarkup();g.style.display=(sync.connected&&sync.authUser&&sync.household&&navigator.onLine)?'none':'flex';const msg=g.querySelector('#gate-message');if(msg)msg.textContent=previous;}
 async function verifySharedAccess(){
   if(!sb||!sync.authUser||!navigator.onLine){sync.connected=false;ensureGate();return false}
   sync.connected=false;ensureGate();
@@ -254,7 +254,7 @@ function installAuthGate(){
         const f=new FormData(e.target),email=String(f.get('email')).trim(),password=String(f.get('password'));
         const {data,error}=gateMode==='signup'?await sb.auth.signUp({email,password}):await sb.auth.signInWithPassword({email,password});
         if(error)throw error;
-        if(gateMode==='signup'&&!data.session){ensureGate();gateMessage('Compte créé. Vérifie ta boîte mail pour confirmer ton adresse, puis connecte-toi.');return}
+        if(gateMode==='signup'&&!data.session){gateMode='signin';ensureGate();gateMessage('Demande de création envoyée. Si Supabase a créé le compte, vérifie tes courriers indésirables et confirme ton adresse e-mail avant de te connecter.');return}
         sync.authUser=data.user;await verifySharedAccess();ensureGate();
       }else{
         const f=new FormData(e.target),code=String(f.get('code')).trim().toUpperCase();
