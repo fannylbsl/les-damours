@@ -201,9 +201,83 @@ async function pullState(){
 function startSyncLoop(){clearInterval(pullTimer);pullTimer=setInterval(pullState,4000);pullState()}
 function stopSyncLoop(){clearInterval(pullTimer);pullTimer=null}
 async function syncInit(){if(!sb)return;const {data:{user}}=await sb.auth.getUser();sync.authUser=user;if(!user)return;const {data:m}=await sb.from('household_members').select('household_id,households(id,code)').eq('user_id',user.id).maybeSingle();if(m?.households){sync.household=m.households;const {data:r}=await sb.from('household_state').select('state').eq('household_id',m.household_id).maybeSingle();if(r?.state){state=mergeSharedState(r.state);weekStart=state.weekStart||startWeek(todayISO());saveLocal();await pushState(true)}else await pushState();sync.connected=true;renderAll();if(sync.channel)sb.removeChannel(sync.channel);sync.channel=sb.channel(`household-${m.household_id}`).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:`household_id=eq.${m.household_id}`},p=>{if(p.new?.state){state={...defaultState(),...p.new.state};weekStart=state.weekStart||startWeek(todayISO());saveLocal();renderAll()}}).subscribe();startSyncLoop()}}
-if(sb){sb.auth.onAuthStateChange((_e,s)=>{sync.authUser=s?.user||null;if(s?.user)setTimeout(syncInit,0);else{sync.connected=false;stopSyncLoop();renderAll()}});setTimeout(syncInit,200)}
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
-bind();renderAll();
+
+/* Authentification obligatoire : l'application reste masquée tant que le foyer partagé n'est pas vérifié. */
+let gateBusy=false, gateMode='signin';
+function gateMarkup(){
+  let stage='signin';
+  if(!sb) stage='config';
+  else if(sync.authUser&&!sync.household) stage='household';
+  else if(sync.authUser&&sync.household&&sync.connected&&navigator.onLine) stage='ready';
+  else if(sync.authUser) stage='checking';
+  const title=stage==='config'?'Connexion à configurer':stage==='household'?'Votre foyer ❤️':stage==='checking'?'Vérification de la synchronisation…':'Les d’Amours ❤️';
+  let body='';
+  if(stage==='config') body='<p>La connexion sécurisée n’est pas configurée. Vérifie les paramètres Supabase de l’application.</p>';
+  else if(stage==='household') body='<p>Connecté avec <strong>'+esc(sync.authUser.email||'ton compte')+'</strong>. Crée le foyer sur le premier téléphone, puis rejoins-le depuis le second avec le code fourni.</p><button class="btn primary gate-btn" id="gate-create">❤️ Créer notre foyer</button><form id="gate-join" class="gate-form"><label for="gate-code">Code du foyer</label><input id="gate-code" class="input" name="code" required maxlength="8" placeholder="AB12CD34" autocomplete="off"><button class="btn gate-btn">Rejoindre le foyer</button></form><button class="gate-link" id="gate-signout">Se déconnecter</button>';
+  else if(stage==='checking') body='<p>On vérifie que ton compte peut accéder au foyer partagé. Aucune saisie n’est autorisée avant la confirmation.</p><button class="btn gate-btn" id="gate-retry">Réessayer</button><button class="gate-link" id="gate-signout">Se déconnecter</button>';
+  else if(stage==='ready') body='<p>Synchronisation vérifiée.</p>';
+  else body='<p>Connectez-vous ou créez un compte pour accéder à votre espace partagé.</p><form id="gate-auth" class="gate-form"><label for="gate-email">Adresse e-mail</label><input id="gate-email" class="input" name="email" type="email" autocomplete="email" required><label for="gate-password">Mot de passe</label><input id="gate-password" class="input" name="password" type="password" minlength="6" autocomplete="current-password" required><button class="btn primary gate-btn" type="submit">Se connecter</button><button class="btn gate-btn" type="button" id="gate-signup">Créer mon compte</button></form><p class="gate-note">Vos données ne seront accessibles qu’après connexion et validation du foyer partagé.</p>';
+  return '<div class="gate-card"><div class="gate-heart">❤️</div><div class="brand-script gate-brand">Les d’Amours</div><h1>'+title+'</h1>'+body+'<div id="gate-message" role="status" class="gate-message"></div></div>';
+}
+function gateMessage(msg){const el=document.getElementById('gate-message');if(el)el.textContent=msg}
+function ensureGate(){let g=document.getElementById('auth-gate');if(!g){g=document.createElement('div');g.id='auth-gate';g.innerHTML=gateMarkup();document.body.appendChild(g)}else g.innerHTML=gateMarkup();g.style.display=(sync.connected&&sync.authUser&&sync.household&&navigator.onLine)?'none':'flex';}
+async function verifySharedAccess(){
+  if(!sb||!sync.authUser||!navigator.onLine){sync.connected=false;ensureGate();return false}
+  sync.connected=false;ensureGate();
+  try{
+    const {data:m,error:me}=await sb.from('household_members').select('household_id,households(id,code)').eq('user_id',sync.authUser.id).maybeSingle();
+    if(me) throw me;
+    if(!m?.households){sync.household=null;ensureGate();return false}
+    sync.household=m.households;
+    const {data:r,error:re}=await sb.from('household_state').select('state').eq('household_id',m.household_id).maybeSingle();
+    if(re) throw re;
+    if(r?.state){state={...defaultState(),...r.state};weekStart=state.weekStart||startWeek(todayISO());saveLocal()}
+    else {const {error:wr}=await sb.from('household_state').upsert({household_id:m.household_id,state},{onConflict:'household_id'});if(wr)throw wr}
+    const {error:writeErr}=await sb.from('household_state').upsert({household_id:m.household_id,state},{onConflict:'household_id'});
+    if(writeErr)throw writeErr;
+    sync.connected=true;renderAll();ensureGate();return true;
+  }catch(err){console.warn('Vérification synchronisation:',err);sync.connected=false;ensureGate();gateMessage('Synchronisation indisponible. Réessaie avant de saisir quoi que ce soit.');return false}
+}
+function installAuthGate(){
+  const css=document.createElement('style');css.textContent='#auth-gate{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:22px;background:linear-gradient(145deg,#fbf6f1,#f5e6e1);overflow:auto}#auth-gate .gate-card{width:min(100%,420px);padding:28px 23px;border:1px solid #eaded6;border-radius:26px;background:#fffdfa;box-shadow:0 16px 50px rgba(98,76,65,.12);text-align:center}#auth-gate .gate-heart{font-size:34px}#auth-gate .gate-brand{font-size:36px;margin:4px 0 8px}#auth-gate h1{font-size:22px;margin:8px 0}#auth-gate p{font-size:14px;line-height:1.55;color:#8c7d76}#auth-gate .gate-form{display:flex;flex-direction:column;gap:10px;text-align:left;margin-top:18px}#auth-gate label{font-size:12px;font-weight:700}#auth-gate .gate-btn{width:100%;margin-top:8px;min-height:46px}#auth-gate .gate-link{border:0;background:transparent;color:#8c7d76;text-decoration:underline;margin-top:16px;padding:10px}#auth-gate .gate-note{font-size:11px;margin-top:18px}#auth-gate .gate-message{font-size:13px;color:#9c514a;margin-top:12px;white-space:pre-wrap}';document.head.appendChild(css);
+  ensureGate();
+  document.addEventListener('submit',async e=>{
+    if(e.target.id!=='gate-auth'&&e.target.id!=='gate-join')return;
+    e.preventDefault();if(gateBusy)return;gateBusy=true;
+    const submit=e.target.querySelector('button[type="submit"],button:not([type])');if(submit)submit.disabled=true;
+    try{
+      if(e.target.id==='gate-auth'){
+        const f=new FormData(e.target),email=String(f.get('email')).trim(),password=String(f.get('password'));
+        const {data,error}=gateMode==='signup'?await sb.auth.signUp({email,password}):await sb.auth.signInWithPassword({email,password});
+        if(error)throw error;
+        if(gateMode==='signup'&&!data.session){ensureGate();gateMessage('Compte créé. Vérifie ta boîte mail pour confirmer ton adresse, puis connecte-toi.');return}
+        sync.authUser=data.user;await verifySharedAccess();ensureGate();
+      }else{
+        const f=new FormData(e.target),code=String(f.get('code')).trim().toUpperCase();
+        const {data,error}=await sb.rpc('join_household',{join_code:code});if(error)throw error;
+        sync.household={id:data[0].id,code:data[0].code};
+        const {error:wr}=await sb.from('household_state').upsert({household_id:sync.household.id,state:defaultState()},{onConflict:'household_id'});if(wr)throw wr;
+        await verifySharedAccess();
+      }
+    }catch(err){ensureGate();gateMessage(err?.message||'Impossible de se connecter. Réessaie.')}
+    finally{gateBusy=false;ensureGate()}
+  });
+  document.addEventListener('click',async e=>{
+    const b=e.target.closest('button');if(!b)return;
+    if(b.id==='gate-signup'){gateMode='signup';ensureGate();const f=document.getElementById('gate-auth');if(f){f.querySelector('button[type="submit"]').textContent='Créer mon compte';f.querySelector('#gate-signup').textContent='J’ai déjà un compte';f.querySelector('#gate-signup').id='gate-switch'}return}
+    if(b.id==='gate-switch'){gateMode='signin';ensureGate();return}
+    if(b.id==='gate-create'){if(!sb||!sync.authUser)return; b.disabled=true;try{const {data,error}=await sb.rpc('create_household');if(error)throw error;sync.household={id:data[0].id,code:data[0].code};const {error:wr}=await sb.from('household_state').upsert({household_id:sync.household.id,state:state},{onConflict:'household_id'});if(wr)throw wr;await verifySharedAccess();if(sync.connected)gateMessage('Foyer créé. Code à transmettre à Thomas : '+data[0].code)}catch(err){gateMessage(err?.message||'Création du foyer impossible.')}finally{ensureGate();if(sync.connected)gateMessage('Foyer créé. Code à transmettre à Thomas : '+(sync.household?.code||''))}return}
+    if(b.id==='gate-retry'){await verifySharedAccess();ensureGate();return}
+    if(b.id==='gate-signout'){await sb.auth.signOut();sync.authUser=null;sync.household=null;sync.connected=false;ensureGate();return}
+  });
+  window.addEventListener('offline',()=>{sync.connected=false;ensureGate();gateMessage('Hors ligne : accès bloqué pour éviter les saisies non synchronisées.')});
+  window.addEventListener('online',()=>{sync.connected=false;ensureGate();setTimeout(()=>verifySharedAccess(),500)});
+  if(sb)sb.auth.onAuthStateChange((_event,session)=>{sync.authUser=session?.user||null;if(!session?.user){sync.household=null;sync.connected=false;ensureGate()}else setTimeout(()=>verifySharedAccess(),0)});
+  if(sb)setTimeout(async()=>{const {data:{session}}=await sb.auth.getSession();sync.authUser=session?.user||null;if(sync.authUser)await verifySharedAccess();ensureGate()},0);
+}
+
+installAuthGate();bind();renderAll();
 
 function birthdaysModal(){
   const list=state.birthdays.map(b=>'<div class="list-item"><span style="font-size:20px">🎂</span><div class="item-main"><strong>'+esc(b.name)+'</strong><small>'+esc(birthdayDateLabel(b))+'</small></div><button class="btn small" data-birthday-edit="'+b.id+'">Modifier</button></div>').join('')||'<div class="empty">Aucun anniversaire pour le moment 🎂</div>';
