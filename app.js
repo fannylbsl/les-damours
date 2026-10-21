@@ -217,7 +217,7 @@ function gateMarkup(){
   else if(stage==='household') body='<p>Connecté avec <strong>'+esc(sync.authUser.email||'ton compte')+'</strong>. Crée le foyer sur le premier téléphone, puis rejoins-le depuis le second avec le code fourni.</p><button class="btn primary gate-btn" id="gate-create">❤️ Créer notre foyer</button><form id="gate-join" class="gate-form"><label for="gate-code">Code du foyer</label><input id="gate-code" class="input" name="code" required maxlength="8" placeholder="AB12CD34" autocomplete="off"><button class="btn gate-btn">Rejoindre le foyer</button></form><button class="gate-link" id="gate-signout">Se déconnecter</button>';
   else if(stage==='checking') body='<p>On vérifie que ton compte peut accéder au foyer partagé. Aucune saisie n’est autorisée avant la confirmation.</p><button class="btn gate-btn" id="gate-retry">Réessayer</button><button class="gate-link" id="gate-signout">Se déconnecter</button>';
   else if(stage==='ready') body='<p>Synchronisation vérifiée.</p>';
-  else body='<p>Connectez-vous ou créez un compte pour accéder à votre espace partagé.</p><form id="gate-auth" class="gate-form"><label for="gate-email">Adresse e-mail</label><input id="gate-email" class="input" name="email" type="email" autocomplete="email" required><label for="gate-password">Mot de passe</label><input id="gate-password" class="input" name="password" type="password" minlength="6" autocomplete="current-password" required><button class="btn primary gate-btn" type="submit">Se connecter</button><button class="btn gate-btn" type="button" id="gate-signup">Créer mon compte</button></form><p class="gate-note">Vos données ne seront accessibles qu’après connexion et validation du foyer partagé.</p>';
+  else body='<p>Connectez-vous ou créez un compte pour accéder à votre espace partagé.</p><form id="gate-auth" class="gate-form"><label for="gate-email">Adresse e-mail</label><input id="gate-email" class="input" name="email" type="email" autocomplete="email" required><label for="gate-password">Mot de passe</label><input id="gate-password" class="input" name="password" type="password" minlength="6" autocomplete="current-password" required><button class="btn primary gate-btn" type="submit">'+(gateMode==='signup'?'Créer mon compte':'Se connecter')+'</button><button class="btn gate-btn" type="button" id="gate-switch">'+(gateMode==='signup'?'J’ai déjà un compte':'Créer mon compte')+'</button></form><p class="gate-note">Vos données ne seront accessibles qu’après connexion et validation du foyer partagé.</p>';
   return '<div class="gate-card"><div class="gate-heart">❤️</div><div class="brand-script gate-brand">Les d’Amours</div><h1>'+title+'</h1>'+body+'<div id="gate-message" role="status" class="gate-message"></div></div>';
 }
 function gateMessage(msg){const el=document.getElementById('gate-message');if(el)el.textContent=msg}
@@ -236,7 +236,10 @@ async function verifySharedAccess(){
     else {const {error:wr}=await sb.from('household_state').upsert({household_id:m.household_id,state},{onConflict:'household_id'});if(wr)throw wr}
     const {error:writeErr}=await sb.from('household_state').upsert({household_id:m.household_id,state},{onConflict:'household_id'});
     if(writeErr)throw writeErr;
-    sync.connected=true;renderAll();ensureGate();return true;
+    sync.connected=true;renderAll();
+    if(sync.channel)sb.removeChannel(sync.channel);
+    sync.channel=sb.channel('household-'+m.household_id).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:'household_id=eq.'+m.household_id},p=>{if(p.new?.state){state={...defaultState(),...p.new.state};weekStart=state.weekStart||startWeek(todayISO());saveLocal();renderAll()}}).subscribe();
+    startSyncLoop();ensureGate();return true;
   }catch(err){console.warn('Vérification synchronisation:',err);sync.connected=false;ensureGate();gateMessage('Synchronisation indisponible. Réessaie avant de saisir quoi que ce soit.');return false}
 }
 function installAuthGate(){
@@ -257,7 +260,6 @@ function installAuthGate(){
         const f=new FormData(e.target),code=String(f.get('code')).trim().toUpperCase();
         const {data,error}=await sb.rpc('join_household',{join_code:code});if(error)throw error;
         sync.household={id:data[0].id,code:data[0].code};
-        const {error:wr}=await sb.from('household_state').upsert({household_id:sync.household.id,state:defaultState()},{onConflict:'household_id'});if(wr)throw wr;
         await verifySharedAccess();
       }
     }catch(err){ensureGate();gateMessage(err?.message||'Impossible de se connecter. Réessaie.')}
@@ -265,9 +267,8 @@ function installAuthGate(){
   });
   document.addEventListener('click',async e=>{
     const b=e.target.closest('button');if(!b)return;
-    if(b.id==='gate-signup'){gateMode='signup';ensureGate();const f=document.getElementById('gate-auth');if(f){f.querySelector('button[type="submit"]').textContent='Créer mon compte';f.querySelector('#gate-signup').textContent='J’ai déjà un compte';f.querySelector('#gate-signup').id='gate-switch'}return}
-    if(b.id==='gate-switch'){gateMode='signin';ensureGate();return}
-    if(b.id==='gate-create'){if(!sb||!sync.authUser)return; b.disabled=true;try{const {data,error}=await sb.rpc('create_household');if(error)throw error;sync.household={id:data[0].id,code:data[0].code};const {error:wr}=await sb.from('household_state').upsert({household_id:sync.household.id,state:state},{onConflict:'household_id'});if(wr)throw wr;await verifySharedAccess();if(sync.connected)gateMessage('Foyer créé. Code à transmettre à Thomas : '+data[0].code)}catch(err){gateMessage(err?.message||'Création du foyer impossible.')}finally{ensureGate();if(sync.connected)gateMessage('Foyer créé. Code à transmettre à Thomas : '+(sync.household?.code||''))}return}
+    if(b.id==='gate-switch'){gateMode=gateMode==='signup'?'signin':'signup';ensureGate();return}
+    if(b.id==='gate-create'){if(!sb||!sync.authUser)return; b.disabled=true;try{const {data,error}=await sb.rpc('create_household');if(error)throw error;sync.household={id:data[0].id,code:data[0].code};const {error:wr}=await sb.from('household_state').upsert({household_id:sync.household.id,state:state},{onConflict:'household_id'});if(wr)throw wr;await verifySharedAccess();if(sync.connected)gateMessage('Foyer créé. Code à transmettre à Thomas : '+data[0].code)}catch(err){gateMessage(err?.message||'Création du foyer impossible.')}finally{ensureGate();if(sync.connected)toast('Foyer créé ❤️ Code à transmettre à Thomas : '+(sync.household?.code||''))}return}
     if(b.id==='gate-retry'){await verifySharedAccess();ensureGate();return}
     if(b.id==='gate-signout'){await sb.auth.signOut();sync.authUser=null;sync.household=null;sync.connected=false;ensureGate();return}
   });
