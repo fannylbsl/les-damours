@@ -214,24 +214,33 @@ function hasItemsMissingFromRemote(merged,remote){
     return (localItems||[]).some(x=>x?.id&&!ids.has(x.id));
   });
 }
+let pullInFlight=false;
 async function pullState(){
-  if(!sb||!sync.authUser||!sync.household)return;
-  const {data:r,error}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();
-  if(error){sync.connected=false;ensureGate();gateMessage('Lecture de la synchronisation impossible : accès bloqué. Vérifie la connexion puis réessaie.');return}
-  if(!r?.state)return;
-  const merged=mergeSharedState(r.state);
-  const shouldWriteBack=hasItemsMissingFromRemote(merged,r.state);
-  if(JSON.stringify(merged)!==JSON.stringify(state)){
-    state=merged;state.weekStart=weekStart;saveLocal();renderAll();
-  }
-  if(shouldWriteBack){
-    try{await writeSharedState(sync.household.id,merged)}
-    catch(writeError){console.warn('Fusion des données:',writeError);sync.connected=false;ensureGate();gateMessage('Une donnée est présente sur ce téléphone mais pas encore partagée. La synchronisation va réessayer.')}
-  }
+  if(!sb||!sync.authUser||!sync.household||pullInFlight||!navigator.onLine)return;
+  pullInFlight=true;
+  try{
+    const {data:r,error}=await sb.from('household_state').select('state').eq('household_id',sync.household.id).maybeSingle();
+    if(error)throw error;
+    if(!r?.state)return;
+    const merged=mergeSharedState(r.state);
+    const shouldWriteBack=hasItemsMissingFromRemote(merged,r.state);
+    if(JSON.stringify(merged)!==JSON.stringify(state)){
+      state=merged;state.weekStart=weekStart;saveLocal();renderAll();
+    }
+    if(shouldWriteBack)await writeSharedState(sync.household.id,merged);
+  }catch(error){
+    console.warn('Sync lecture:',error);
+    if(navigator.onLine){sync.connected=false;ensureGate();gateMessage('Actualisation impossible pour le moment. Vérifie la connexion puis réessaie.')}
+  }finally{pullInFlight=false}
 }
+function refreshWhenVisible(){
+  if(document.visibilityState==='visible'&&sync.connected)pullState();
+}
+document.addEventListener('visibilitychange',refreshWhenVisible);
+window.addEventListener('focus',refreshWhenVisible);
 function startSyncLoop(){clearInterval(pullTimer);pullTimer=setInterval(pullState,4000);pullState()}
 function stopSyncLoop(){clearInterval(pullTimer);pullTimer=null}
-async function syncInit(){if(!sb)return;const {data:{user}}=await sb.auth.getUser();sync.authUser=user;if(!user)return;const {data:m}=await sb.from('household_members').select('household_id,households(id,code)').eq('user_id',user.id).maybeSingle();if(m?.households){sync.household=m.households;const {data:r}=await sb.from('household_state').select('state').eq('household_id',m.household_id).maybeSingle();if(r?.state){state=mergeSharedState(r.state);state.weekStart=weekStart;saveLocal();await pushState(true)}else await pushState();sync.connected=true;renderAll();if(sync.channel)sb.removeChannel(sync.channel);sync.channel=sb.channel(`household-${m.household_id}`).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:`household_id=eq.${m.household_id}`},p=>{if(p.new?.state){state=mergeSharedState(p.new.state);state.weekStart=weekStart;saveLocal();renderAll()}}).subscribe();startSyncLoop()}}
+async function syncInit(){if(!sb)return;const {data:{user}}=await sb.auth.getUser();sync.authUser=user;if(!user)return;const {data:m}=await sb.from('household_members').select('household_id,households(id,code)').eq('user_id',user.id).maybeSingle();if(m?.households){sync.household=m.households;const {data:r}=await sb.from('household_state').select('state').eq('household_id',m.household_id).maybeSingle();if(r?.state){state=mergeSharedState(r.state);state.weekStart=weekStart;saveLocal();await pushState(true)}else await pushState();sync.connected=true;renderAll();if(sync.channel)sb.removeChannel(sync.channel);sync.channel=sb.channel(`household-${m.household_id}`).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:`household_id=eq.${m.household_id}`},p=>{if(p.new?.state){state=mergeSharedState(p.new.state);state.weekStart=weekStart;saveLocal();renderAll()}}).subscribe(status=>{if(status==='SUBSCRIBED')pullState();else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')console.warn('Canal temps réel indisponible : le rafraîchissement périodique reste actif.')});startSyncLoop()}}
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
 /* Authentification obligatoire : l'application reste masquée tant que le foyer partagé n'est pas vérifié. */
@@ -267,7 +276,7 @@ async function verifySharedAccess(){
     await writeSharedState(m.household_id,state);
     sync.connected=true;renderAll();
     if(sync.channel)sb.removeChannel(sync.channel);
-    sync.channel=sb.channel('household-'+m.household_id).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:'household_id=eq.'+m.household_id},p=>{if(p.new?.state){state=mergeSharedState(p.new.state);state.weekStart=weekStart;saveLocal();renderAll()}}).subscribe();
+    sync.channel=sb.channel('household-'+m.household_id).on('postgres_changes',{event:'*',schema:'public',table:'household_state',filter:'household_id=eq.'+m.household_id},p=>{if(p.new?.state){state=mergeSharedState(p.new.state);state.weekStart=weekStart;saveLocal();renderAll()}}).subscribe(status=>{if(status==='SUBSCRIBED')pullState();else if(status==='CHANNEL_ERROR'||status==='TIMED_OUT')console.warn('Canal temps réel indisponible : le rafraîchissement périodique reste actif.')});
     startSyncLoop();ensureGate();return true;
   }catch(err){console.warn('Vérification synchronisation:',err);sync.connected=false;ensureGate();gateMessage('Erreur de synchronisation : '+String(err?.message||err||'cause inconnue')+' — réessaie.');return false}
 }
